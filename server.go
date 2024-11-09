@@ -1,88 +1,99 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 
+	"example.com/simple-server/pkg/db"
+	"example.com/simple-server/pkg/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
-type album struct {
-	ID     string  `json:"id"`
-	Title  string  `json:"title"`
-	Artist string  `json:"artist"`
-	Price  float64 `json:"price"`
-}
-
-// Add some data to use at the beginning
-var albums = []album{
-	{ID: "1", Title: "Blue Train", Artist: "John Coltrane", Price: 56.99},
-	{ID: "2", Title: "Jeru", Artist: "Gerry Mulligan", Price: 17.99},
-	{ID: "3", Title: "Sarah Vaughan and Clifford Brown", Artist: "Sarah Vaughan", Price: 39.99},
-}
+// type albumBody struct {
+// 	ID     string  `json:"id"`
+// 	Title  string  `json:"title"`
+// 	Artist string  `json:"artist"`
+// 	Price  float64 `json:"price"`
+// }
 
 // Endpoints
-
-func getAlbums(c *gin.Context) {
+func getAlbums(c *gin.Context, db *gorm.DB) {
+	var albums []models.Album
+	if result := db.Find(&albums); result.Error != nil {
+		fmt.Println(result.Error)
+	}
 	c.IndentedJSON(http.StatusOK, albums)
 }
-func postAlbums(c *gin.Context) {
-	var newAlbum album
 
-	if err := c.BindJSON(&newAlbum); err != nil {
-		return
+func postAlbums(c *gin.Context, db *gorm.DB) {
+	var newAlbum models.Album
+	if result := db.Create(&newAlbum); result.Error != nil {
+		fmt.Println(result.Error)
 	}
-
-	albums = append(albums, newAlbum)
 	c.IndentedJSON(http.StatusCreated, newAlbum)
 }
-func getAlbumById(c *gin.Context) {
+
+func getAlbumById(c *gin.Context, db *gorm.DB) {
 	id := c.Param("id")
-
-	for _, a := range albums {
-		if a.ID == id {
-
-			c.IndentedJSON(http.StatusOK, a)
-			return
+	var album models.Album
+	if result := db.Find(&album, id); result.Error != nil {
+		fmt.Println(result.Error)
+		c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+	} else {
+		if album.ID == 0 {
+			c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+		} else {
+			c.IndentedJSON(http.StatusOK, album)
 		}
 	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
 }
-func deleteAlbumById(c *gin.Context) {
-	id := c.Param("id")
 
-	for i, item := range albums {
-		if item.ID == id {
-			albums = append(albums[:i], albums[i+1:]...)
-			c.IndentedJSON(http.StatusOK, item)
-			return
-		}
+func deleteAlbumById(c *gin.Context, db *gorm.DB) {
+	id := c.Param("id")
+	var album models.Album
+	if result := db.Delete(&album, id); result.Error != nil {
+		fmt.Println(result.Error)
+		c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+	} else {
+		c.IndentedJSON(http.StatusOK, true)
 	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
 }
-func patchAlbumById(c *gin.Context) {
+
+func patchAlbumById(c *gin.Context, db *gorm.DB) {
 	id := c.Param("id")
-	var newAlbum album
-
-	if err := c.BindJSON(&newAlbum); err != nil {
-		return
+	var data models.Body
+	if err := c.BindJSON(&data); err != nil {
+		c.IndentedJSON(http.StatusBadRequest, data)
 	}
-
-	for i, item := range albums {
-		if item.ID == id {
-			if newAlbum.Artist != "" && newAlbum.Artist != item.Artist {
-				albums[i].Artist = newAlbum.Artist
+	var item models.Album
+	if result := db.First(&item, id); result.Error != nil {
+		c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+	} else {
+		if item.ID == 0 {
+			c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+		} else {
+			changes := map[string]interface{}{}
+			if item.Title != data.Title {
+				changes["Title"] = data.Title
 			}
-			if newAlbum.Title != "" && newAlbum.Title != item.Title {
-				albums[i].Title = newAlbum.Artist
+			if item.Artist != data.Artist {
+				changes["Artist"] = data.Artist
 			}
-			if newAlbum.Price != item.Price {
-				albums[i].Price = newAlbum.Price
+			if item.Price != data.Price {
+				changes["Price"] = data.Price
 			}
-			c.IndentedJSON(http.StatusOK, albums[i])
-			return
+			if len(changes) != 0 {
+				if err := db.Model(&item).Updates(changes).Error; err != nil {
+					c.IndentedJSON(http.StatusOK, gin.H{"message": "Record didn't receive any changes"})
+				} else {
+					c.IndentedJSON(http.StatusOK, item)
+				}
+			} else {
+				c.IndentedJSON(http.StatusOK, gin.H{"message": "Record didn't receive any changes"})
+			}
 		}
 	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
 }
 
 func notImplemented(c *gin.Context) {
@@ -93,12 +104,14 @@ func notImplemented(c *gin.Context) {
 }
 
 func main() {
+	db := db.Init()
 	router := gin.Default()
-	router.GET("/albums", getAlbums)
-	router.POST("/albums", postAlbums)
-	router.GET("/albums/:id", getAlbumById)
-	router.DELETE("/albums/:id", deleteAlbumById)
-	router.PATCH("/albums/:id", patchAlbumById)
+
+	router.GET("/albums", func(c *gin.Context) { getAlbums(c, db) })
+	router.POST("/albums", func(c *gin.Context) { postAlbums(c, db) })
+	router.GET("/albums/:id", func(c *gin.Context) { getAlbumById(c, db) })
+	router.DELETE("/albums/:id", func(c *gin.Context) { deleteAlbumById(c, db) })
+	router.PATCH("/albums/:id", func(c *gin.Context) { patchAlbumById(c, db) })
 	router.NoRoute(notImplemented)
 
 	router.Run("localhost:8080")
